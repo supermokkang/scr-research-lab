@@ -9,7 +9,7 @@ from engine import Params, indicators, signals, run_backtest, resample_ohlc
 
 st.set_page_config(page_title='SCR Research Lab', page_icon='📈', layout='wide')
 st.title('📈 SCR Research Lab · 무료 백테스트')
-st.caption('한국 · 미국 · 일본 | Fast %K(5), %D(3) + CCI(20) + RSI(14) | SCR 순차 탈출 신호 연구 v1.1')
+st.caption('한국 · 미국 · 일본 | Fast %K(5), %D(3) + CCI(20) + RSI(14) | SCR 순차 탈출 신호 연구 v1.2')
 st.warning('이 전략은 캡처에 있는 SCR 원문과 동일하다고 검증되지 않았습니다. 성과는 미래 수익을 보장하지 않습니다.', icon='⚠️')
 
 EXAMPLES = {'🇺🇸 미국': {'SOXX': 'SOXX', 'TQQQ': 'TQQQ', 'SPY': 'SPY', 'NVDA': 'NVDA'},
@@ -131,7 +131,7 @@ def shade_extreme(fig, frame, field, high, low, row, col, showlegend=False):
 
 fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=.035,
                     row_heights=[.55,.15,.15,.15], subplot_titles=['OHLC + 매수/매도 신호','Stochastic','CCI','RSI'])
-fig.add_trace(go.Candlestick(x=data.index, open=data.Open,high=data.High,low=data.Low,close=data.Close,name=ticker), row=1,col=1)
+fig.add_trace(go.Candlestick(x=data.index, open=data.Open,high=data.High,low=data.Low,close=data.Close,name=ticker, increasing=dict(line=dict(color='#e53935'),fillcolor='#e53935'),decreasing=dict(line=dict(color='#1565c0'),fillcolor='#1565c0')), row=1,col=1)
 for col, name, symbol, color in [('Buy','매수 신호','triangle-up','#00aa71'),('Sell','매도 신호','triangle-down','#ef4444')]:
     points = data[data[col]]
     fig.add_trace(go.Scatter(x=points.index,y=points.Low*.98 if col=='Buy' else points.High*1.02,
@@ -178,7 +178,7 @@ if multi_view:
             st.warning(f'{timeframe} 지표 계산에 필요한 데이터가 부족합니다. 데이터 범위를 늘려 주세요.')
             continue
         multi.add_trace(go.Candlestick(x=f.index,open=f.Open,high=f.High,low=f.Low,close=f.Close,
-                                       name=timeframe,showlegend=False),row=1,col=col)
+                                       name=timeframe,showlegend=False, increasing=dict(line=dict(color='#e53935'),fillcolor='#e53935'),decreasing=dict(line=dict(color='#1565c0'),fillcolor='#1565c0')),row=1,col=col)
         # Only reference-timeframe signals; plot markers on its own price series.
         if timeframe == tf:
             for signal, marker, color in [('Buy','triangle-up','#e53935'),('Sell','triangle-down','#1565c0')]:
@@ -275,6 +275,23 @@ if not audit.empty:
     st.dataframe(audit, use_container_width=True)
     st.download_button('신호별 3지표 탈출 날짜 CSV', audit.to_csv().encode('utf-8-sig'), file_name=f'{ticker}_scr_escape_audit.csv', mime='text/csv')
 st.info('차트의 빨간/파란 세로선은 **봉 마감 신호 확정일**입니다. 실제 매수·매도 체결은 다음 봉 시가이므로 날짜가 다음 주로 표시될 수 있습니다. 원문 차트와 비교할 때는 신호 확정일로 비교하세요.')
+st.subheader('🔎 신호 전후 4주 · CCI 기준선 교차 확인')
+st.caption('신호가 표시된 봉의 이전 4개와 이후 2개 봉을 나란히 보여줍니다. 이 표는 신호를 앞당기지 않으며 실제 지표 계산을 확인하는 용도입니다. 색은 CCI가 -100 이하이면 과매도, 초과하면 탈출로 판단합니다.')
+buy_dates = list(data.index[data['Buy']])
+if buy_dates:
+    selected_date = st.selectbox('검증할 매수 신호일',buy_dates,index=len(buy_dates)-1,format_func=lambda x: str(x.date()))
+    selected_loc = data.index.get_loc(selected_date)
+    local = data.iloc[max(0,selected_loc-4):min(len(data),selected_loc+3)].copy()
+    local.insert(0,'봉 날짜',[d.date().isoformat() for d in local.index])
+    local['CCI 상태'] = local['C'].map(lambda v:'과매도' if pd.notna(v) and v <= p.cci_os else ('탈출' if pd.notna(v) else '계산 불가'))
+    local['CCI 상향 교차'] = ((local['C'] > p.cci_os) & (data['C'].shift(1).loc[local.index] <= p.cci_os)).map({True:'예', False:'아니오'})
+    local['매수 신호일'] = local['Buy'].map({True:'★',False:''})
+    local['CCI 전주'] = data['C'].shift(1).loc[local.index]
+    st.dataframe(local[['봉 날짜','C','CCI 전주','CCI 상태','CCI 상향 교차','S','R','매수 신호일']].rename(columns={'C':'CCI','S':'Stochastic','R':'RSI'}).style.format({'CCI':'{:.2f}','CCI 전주':'{:.2f}','Stochastic':'{:.2f}','RSI':'{:.2f}'}),use_container_width=True,hide_index=True)
+    st.caption('주의: Yahoo 보정 시세(auto_adjust=True)를 사용하므로 HTS의 비보정 원본 가격 지표와 차이가 날 수 있어. 주봉의 날짜는 해당 주 마지막 실제 거래일이야.')
+else:
+    st.info('검증 가능한 매수 신호가 없습니다.')
+
 st.subheader('모든 SCR 신호 발생 날짜와 지표값')
 signal_rows = data.loc[data['Buy'] | data['Sell'], ['Open', 'Close', 'S', 'C', 'R', 'Buy', 'Sell']].copy()
 if signal_rows.empty:
