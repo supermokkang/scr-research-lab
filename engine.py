@@ -59,79 +59,45 @@ def indicators(ohlc: pd.DataFrame, p: Params) -> pd.DataFrame:
     return d
 
 
-def signals(d: pd.DataFrame, p: Params, mode: str = 'strict', window: int = 8) -> pd.DataFrame:
-    """Two explicitly distinct SCR interpretations, evaluated at completed bar close.
-
-    strict: ALL 3 indicators cross their own threshold on the SAME bar.
-            Thus all 3 must be beyond their thresholds on the preceding bar.
-    staged: each indicator visited its extreme within the previous `window` bars,
-            and on the signal bar all have recovered together, with at least
-            one genuinely crossing on the current bar. State is not perpetual.
-    Buy/sell alternate. These are interpretations, not a verified original formula.
+def signals(d: pd.DataFrame, p: Params) -> pd.DataFrame:
+    """Sole SCR interpretation: each of S,C,R has visited its extreme and
+    individually escaped it; emit the signal when the last escapes.
+    Buy and sell alternate, and only the active phase is tracked.
+    No arbitrary lookback expiry. Closed-bar values only.
     """
-    if mode == 'sequential':
-        return _sequential_signals(d, p, window)
-    if mode not in ('strict', 'staged', 'example'):
-        raise ValueError('Unknown SCR mode')
-    if window < 1:
-        raise ValueError('window must be >= 1')
-    d = d.copy()
-    buy = np.zeros(len(d), dtype=bool)
-    sell = np.zeros(len(d), dtype=bool)
-    v = d[['S', 'C', 'R']].to_numpy(dtype=float)
-    low = np.array([p.stoch_os, p.cci_os, p.rsi_os])
-    high = np.array([p.stoch_ob, p.cci_ob, p.rsi_ob])
-    phase = 'entry'
-    signal_cols = ['S_main', 'C', 'R']
-    avg_cols = ['S_signal', 'C_signal', 'R_signal']
-    for i in range(1, len(d)):
-        current, previous = v[i], v[i-1]
-        if not (np.isfinite(current).all() and np.isfinite(previous).all()):
+    out = d.copy()
+    v = out[['S', 'C', 'R']].to_numpy(dtype=float)
+    lows = np.array([p.stoch_os, p.cci_os, p.rsi_os])
+    highs = np.array([p.stoch_ob, p.cci_ob, p.rsi_ob])
+    buys = np.zeros(len(out), dtype=bool)
+    sells = np.zeros(len(out), dtype=bool)
+    phase = 'buy'
+    visited = np.zeros(3, dtype=bool)
+    escaped = np.zeros(3, dtype=bool)
+    for i, values in enumerate(v):
+        if not np.isfinite(values).all():
             continue
-        threshold = low if phase == 'entry' else high
-        if phase == 'entry':
-            crossing = (previous <= low) & (current > low)
-            above = current > low
-            extreme = v[max(0, i-window):i] <= low
-        else:
-            crossing = (previous >= high) & (current < high)
-            above = current < high
-            extreme = v[max(0, i-window):i] >= high
-        if mode == 'strict':
-            triggered = bool(crossing.all())
-        elif mode == 'staged':
-            triggered = bool(above.all() and crossing.any() and extreme.any(axis=0).all())
-        else:
-            # Example-driven hypothesis: previously all three reached extreme levels,
-            # then their respective indicator lines align on the reversal side of their
-            # signal averages. At least one actual crossover must happen NOW.
-            # Do not require all three to exceed their oversold/overbought LEVELS.
-            main_now = d[signal_cols].iloc[i].to_numpy(dtype=float)
-            avg_now = d[avg_cols].iloc[i].to_numpy(dtype=float)
-            main_prev = d[signal_cols].iloc[i-1].to_numpy(dtype=float)
-            avg_prev = d[avg_cols].iloc[i-1].to_numpy(dtype=float)
-            if not (np.isfinite(main_now).all() and np.isfinite(avg_now).all() and
-                    np.isfinite(main_prev).all() and np.isfinite(avg_prev).all()):
-                continue
-            if phase == 'entry':
-                aligned = main_now > avg_now
-                fresh = (main_prev <= avg_prev) & (main_now > avg_now)
+        levels = lows if phase == 'buy' else highs
+        extreme = values <= levels if phase == 'buy' else values >= levels
+        safe = values > levels if phase == 'buy' else values < levels
+        for j in range(3):
+            if extreme[j]:
+                visited[j] = True
+                escaped[j] = False
+            elif visited[j] and safe[j]:
+                escaped[j] = True
+        if visited.all() and escaped.all():
+            if phase == 'buy':
+                buys[i] = True
+                phase = 'sell'
             else:
-                aligned = main_now < avg_now
-                fresh = (main_prev >= avg_prev) & (main_now < avg_now)
-            extreme_main = d[signal_cols].iloc[max(0,i-window):i].to_numpy(dtype=float)
-            visited = (extreme_main <= low if phase == 'entry' else extreme_main >= high).any(axis=0)
-            triggered = bool(visited.all() and aligned.all() and fresh.any())
-        if triggered:
-            if phase == 'entry':
-                buy[i] = True
-                phase = 'exit'
-            else:
-                sell[i] = True
-                phase = 'entry'
-    d['Buy'] = buy
-    d['Sell'] = sell
-    return d
+                sells[i] = True
+                phase = 'buy'
+            visited[:] = False
+            escaped[:] = False
+    out['Buy'] = buys
+    out['Sell'] = sells
+    return out
 
 def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Long-only, all-in, full shares fractional permitted, commissions paid per side.
@@ -196,54 +162,3 @@ def resample_ohlc(d: pd.DataFrame, freq: str) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=['Date','Open','High','Low','Close','Volume']).set_index('Date')
 
 
-def _sequential_signals(d: pd.DataFrame, p: Params, window: int) -> pd.DataFrame:
-    """Each S,C,R must individually visit extreme then cross its threshold.
-
-    Different bars and any crossing order are permitted. The signal appears
-    when the LAST still-pending indicator crosses and all 3 are recovered.
-    On a failed recovery the indicator becomes pending again; no premature buy.
-    window limits the age of *each* indicator's first oversold/overbought
-    observation relative to the final trigger, not the signal-line crossing.
-    Buy/sell alternate. Only closed-bar data are used.
-    """
-    if window < 1:
-        raise ValueError('window must be >= 1')
-    out = d.copy()
-    v = out[['S', 'C', 'R']].to_numpy(dtype=float)
-    low = np.array([p.stoch_os, p.cci_os, p.rsi_os])
-    high = np.array([p.stoch_ob, p.cci_ob, p.rsi_ob])
-    buy = np.zeros(len(out), dtype=bool)
-    sell = np.zeros(len(out), dtype=bool)
-    phase = 'entry'
-    visited = np.full(3, -1, dtype=int)
-    recovered = np.zeros(3, dtype=bool)
-    for i in range(len(out)):
-        cur = v[i]
-        if not np.isfinite(cur).all():
-            continue
-        threshold = low if phase == 'entry' else high
-        in_extreme = cur <= threshold if phase == 'entry' else cur >= threshold
-        on_recovery_side = cur > threshold if phase == 'entry' else cur < threshold
-        # Expire stale individual extremes.
-        expired = (visited >= 0) & ((i - visited) > window)
-        visited[expired] = -1
-        recovered[expired] = False
-        # A renewed extreme starts a new pending recovery for that indicator.
-        for j in range(3):
-            if in_extreme[j] and (visited[j] < 0 or recovered[j]):
-                visited[j] = i
-                recovered[j] = False
-        newly_recovered = (visited >= 0) & (~recovered) & on_recovery_side
-        recovered |= newly_recovered
-        if bool(recovered.all() and newly_recovered.any()):
-            if phase == 'entry':
-                buy[i] = True
-                phase = 'exit'
-            else:
-                sell[i] = True
-                phase = 'entry'
-            visited[:] = -1
-            recovered[:] = False
-    out['Buy'] = buy
-    out['Sell'] = sell
-    return out

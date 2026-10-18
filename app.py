@@ -9,7 +9,7 @@ from engine import Params, indicators, signals, run_backtest, resample_ohlc
 
 st.set_page_config(page_title='SCR Research Lab', page_icon='📈', layout='wide')
 st.title('📈 SCR Research Lab · 무료 백테스트')
-st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 원문 예시 기반 신호 연구 v0.8')
+st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 순차 탈출 신호 연구 v1.0')
 st.warning('이 전략은 캡처에 있는 SCR 원문과 동일하다고 검증되지 않았습니다. 성과는 미래 수익을 보장하지 않습니다.', icon='⚠️')
 
 EXAMPLES = {'🇺🇸 미국': {'SOXX': 'SOXX', 'TQQQ': 'TQQQ', 'SPY': 'SPY', 'NVDA': 'NVDA'},
@@ -51,17 +51,8 @@ with st.sidebar:
     cb = st.number_input('CCI 과매수', 1., 500., 100.)
     ro = st.number_input('RSI 과매도', 1., 49., 30.)
     rb = st.number_input('RSI 과매수', 51., 99., 70.)
-    st.header('③ SCR 판정 규칙')
-    mode_label = st.radio('SCR 신호 판정', [
-        '원문 해석: 세 지표가 순차적으로 과매도 탈출 완료',
-        '이전 순차 모드: 최근 이력 후 동반 복귀',
-        '엄격: 세 지표 모두 같은 봉에서 기준선 돌파',
-        '참고 가설: Signal선 교차 기반',
-    ], index=0, help='기본 규칙은 S·C·R이 각각 과매도 진입 후 순서와 상관없이 과매도 기준선 위로 회복, 마지막 지표가 탈출한 봉에서 매수합니다. 매도는 반대입니다.')
-    signal_mode = ('sequential' if mode_label.startswith('원문') else
-                   'staged' if mode_label.startswith('이전') else
-                   'strict' if mode_label.startswith('엄격') else 'example')
-    window = st.number_input('각 지표 과매도·과매수 이력 유효 기간 (봉)', min_value=1, max_value=260, value=26, disabled=(signal_mode == 'strict'), help='예: 주봉 26은 26주 안에 세 지표의 탈출을 모두 마칠 때만 인정합니다. 원문에는 기간 제한이 명시되지 않아 연구용 설정입니다.')
+    st.header('③ 매매 설정')
+    st.caption('유일한 SCR 규칙: S·C·R이 각각 과매도 진입 후 순차 탈출 완료 시 매수. 과매수 순차 이탈 완료 시 매도.')
     fee = st.number_input('한쪽 거래 수수료 (%)', 0., 2., 0.10, step=0.01)
     capital = st.number_input('초기 투자금 (가격 표시 통화)', 100., 1e9, 10000., step=1000.)
     execute = st.button('🚀 백테스트 실행', type='primary', use_container_width=True)
@@ -80,43 +71,21 @@ try:
             st.error('해당 기간/주기에는 계산할 봉 수가 부족합니다. 데이터 범위를 늘리세요.')
             st.stop()
         indicator_data = indicators(frame, p)
-        data = signals(indicator_data, p, mode=signal_mode, window=int(window))
-        sequential_count = signals(indicator_data, p, mode='sequential', window=int(window))
-        strict_count = signals(indicator_data, p, mode='strict', window=int(window))
-        staged_count = signals(indicator_data, p, mode='staged', window=int(window))
-        example_count = signals(indicator_data, p, mode='example', window=int(window))
+        data = signals(indicator_data, p)
         equity, trades, stats = run_backtest(data, p)
 except Exception as exc:
-    st.error(f'데이터 조회/계산 실패: {exc}')
+    st.error(f'시세 다운로드 또는 백테스트 계산 실패: {type(exc).__name__}: {exc}')
     st.stop()
 
 st.subheader('SCR 신호 발생 횟수')
-with st.expander('왜 신호가 0회인지? · 판정 방식 비교', expanded=not bool(data['Buy'].any())):
-    st.write('모드에 따라 *신호 계산 조건이 달라서* 결과가 다릅니다. 원문의 실제 계산식은 아직 미확정입니다.')
-    comparison = pd.DataFrame([
-        {'판정 방식':f'순차 탈출 완료 (최근 {int(window)}봉)', '매수 신호':int(sequential_count.Buy.sum()), '매도 신호':int(sequential_count.Sell.sum())},
-        {'판정 방식':'사진 사례 기반 Signal선 회복(가설)', '매수 신호':int(example_count.Buy.sum()), '매도 신호':int(example_count.Sell.sum())},
-        {'판정 방식':'엄격 동시 돌파', '매수 신호':int(strict_count.Buy.sum()), '매도 신호':int(strict_count.Sell.sum())},
-        {'판정 방식':f'순차 회복 (최근 {int(window)}봉)', '매수 신호':int(staged_count.Buy.sum()), '매도 신호':int(staged_count.Sell.sum())},
-    ])
-    st.dataframe(comparison, hide_index=True, use_container_width=True)
-    if not data.Buy.any():
-        st.warning('선택한 모드의 매수 신호가 0회입니다. 데이터 로딩 오류라고 단정할 수 없습니다. 위 표에서 여러 판정 규칙을 비교해 주세요.')
-
 sig_cols = st.columns(4)
 sig_cols[0].metric('매수 신호', f"{stats['Buy signals']}회")
 sig_cols[1].metric('매도 신호', f"{stats['Sell signals']}회")
 sig_cols[2].metric('완료된 매수→매도', f"{stats['Trades']}회")
 sig_cols[3].metric('마지막 봉 미체결 신호', '있음' if stats['Unfilled final signal'] else '없음')
-st.caption(f'판정: {mode_label}. 신호는 매수·매도가 번갈아 발생하는 상태형이며 미보유/보유 여부와 독립적인 전체 후보 횟수는 아닙니다.')
-if signal_mode == 'sequential':
-    st.info('기본 규칙: S·C·R 각각 과매도 기준선 이하를 경험한 후 **순서와 관계없이** 기준선 위로 탈출합니다. **세 번째 지표가 회복을 완료한 봉에서 매수**합니다. 매도는 세 지표가 과매수 기준선 이상을 경험한 후 모두 기준선 아래로 탈출했을 때 발생합니다. 각 지표의 이력 유효기간은 설정값을 사용합니다.')
-elif signal_mode == 'example':
-    st.info('사진 기반 가설: 최근 설정된 봉 수 안에 S·C·R 모두 과매도를 경험한 뒤, Stochastic(5)의 본선과 Signal(3), CCI(20)와 Signal(10), RSI(14)와 Signal(6)이 모두 상승 우위가 되고 적어도 하나가 현재 봉에서 Signal선을 상향 교차하면 매수. 매도는 역방향입니다. 원문과 동일한 검증된 공식은 아닙니다.')
-elif signal_mode == 'strict':
-    st.info('원문 문구를 문자 그대로 적용: 이전 봉에서 S·C·R 모두 과매도 기준 이하 → 이번 봉에서 모두 초과하면 매수. 매도는 이전 봉 모두 과매수 이상 → 이번 봉 모두 미만. 같은 봉 동시 돌파는 매우 드물 수 있습니다.')
-else:
-    st.info(f'대안 가설: 최근 {int(window)}봉 사이 세 지표가 각각 과매도/과매수 상태를 경험하고, 현재 봉에 적어도 하나가 기준선을 돌파하며 세 지표가 모두 정상 범위로 돌아오면 신호. 원문 공식으로 확정된 방식은 아닙니다.')
+st.info('단일 규칙: 세 지표가 각각 과매도에 들어갔다가 기준선을 순차적으로 회복한 후 **마지막 지표가 회복을 완료한 봉에 매수 신호**를 표시합니다. 매도는 반대입니다. 임의 유효기간은 사용하지 않습니다.')
+if not data.Buy.any():
+    st.warning('매수 신호 0회: 데이터 기간·지표 임계값 또는 상태형 매도 대기로 인해 발생할 수 있습니다. 원문 사례 날짜와 대조해 주세요.')
 cols = st.columns(5)
 for col, key, fmt in zip(cols, ['Return %','CAGR %','MDD %','Win rate %','Trades'], ['{:.1f}%']*4+['{}']):
     val = stats[key]
@@ -319,13 +288,9 @@ else:
     st.download_button('거래 내역 CSV',trades.to_csv(index=False).encode('utf-8-sig'),file_name=f'{ticker}_scr_trades.csv',mime='text/csv')
 st.download_button('지표·시세 CSV',data.to_csv().encode('utf-8-sig'),file_name=f'{ticker}_scr_signals.csv',mime='text/csv')
 with st.expander('모델 가정·한계 (중요)'):
-    st.markdown('''- **SCR 원문 미확정**: 기본 순차 탈출은 세 지표의 탈출 완료 시점으로 판정하며 이력 유효기간은 실험용 설정입니다. 정확한 HTS 지표 공식·기간 제한은 아직 확인되지 않았습니다.
-- **기존 가설**: 엄격 모드에서는 전 봉에서 세 지표 모두 극단구간, 현재 봉에서 모두 돌파할 때만 신호. 순차 모드에서는 최근 설정한 봉 수 안에 각 지표가 극단구간을 경험하고 함께 복귀할 때 신호. 두 가지 모두 원문 제작자의 정확한 알고리즘으로 검증된 것은 아닙니다.
-- **세로선**: 빨간색은 매수 신호, 파란색은 매도 신호로 봉 마감 확정일을 표시합니다. 선은 4개 패널에 공통 적용됩니다.
-- **신호 빈도**: 매수와 매도가 번갈아 발생하는 포지션 상태형 SCR 횟수입니다. 미보유/보유와 무관한 독립 신호 전수 탐색과는 다릅니다.
-- **미래정보 방지**: 봉 마감으로 확인한 신호를 다음 봉 시가에 체결. 다만 야후 수정가격의 배당 반영은 거래 가능한 실제 체결가와 차이가 있을 수 있음.
-- **체결**: 전액 매수/전량 매도, 롱 전용, 소수점 주식 허용, 슬리피지·세금·환전비용·현금이자 제외.
-- **주봉·월봉**: 일별 시세를 집계. 현재 진행 중인 마지막 주/월의 불완전 봉은 실시간 조회에서 포함될 수 있으므로 장중 실거래 신호로 사용 금지.
-- **성과**: 진입 중인 잔여 포지션은 종가로 평가. 마지막 봉 신호는 체결하지 않음. 승률은 완료 거래만 계산.
-- **가격**: 야후가 돌려준 조정 OHLC로 계산, 일부 시장 데이터의 정확성·완전성 보장 불가. 상장폐지 종목 누락 등 생존편향 가능.
-''')
+    st.markdown("""- **한 가지 SCR 규칙만 사용**: 세 지표가 각자 과매도를 경험한 뒤 순차적으로 기준선을 위로 탈출, 마지막 탈출 시 매수. 매도는 과매수에서 반대 방향.
+- **기간 제한 없음**: 과거 극단구간 이력을 무기한 보유하므로 원문과 날짜 일치 검증이 필요합니다.
+- **상태형 신호**: 매수 후 매도까지는 추가 매수를 표시하지 않습니다.
+- **거래**: 봉 마감 확정 신호 후 다음 봉 시가 매매. 수수료 반영, 슬리피지·세금 제외.
+- **보조 차트**: 거래는 기준 봉에서만 계산하고 다른 봉은 후행 확인용입니다. 미완성 상위 봉 미래 데이터는 신호일 시점 상태표에 사용하지 않습니다.
+- **원문 검증**: HTS 원본 지표의 세부 공식이 확인되지 않아 사진 속 날짜와 정확히 일치한다고 단정할 수 없습니다.""")
