@@ -45,3 +45,15 @@ def test_resample_last_observation():
     assert w.index[-1]==d.index[-1]
     assert m.index[-1]==d.index[-1]
     assert (w.High>=w.Low).all()
+
+def test_signal_counts_and_trade_dates():
+    d = sample(6)
+    d['Buy'] = [False, True, False, False, False, False]
+    d['Sell'] = [False, False, False, True, False, False]
+    _, tr, m = run_backtest(d, Params(commission=0))
+    assert m['Buy signals'] == 1 and m['Sell signals'] == 1
+    assert m['Trades'] == 1
+    assert tr.iloc[0]['Buy signal'] == d.index[1]
+    assert tr.iloc[0]['Sell signal'] == d.index[3]
+    assert tr.iloc[0]['Entry'] == d.index[2]
+    assert tr.iloc[0]['Exit'] == d.index[4]

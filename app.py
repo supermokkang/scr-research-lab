@@ -9,7 +9,7 @@ from engine import Params, indicators, signals, run_backtest, resample_ohlc
 
 st.set_page_config(page_title='SCR Research Lab', page_icon='📈', layout='wide')
 st.title('📈 SCR Research Lab · 무료 백테스트')
-st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | 연구용 가설 모델 v0.1')
+st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 신호 연구 v0.2')
 st.warning('이 전략은 캡처에 있는 SCR 원문과 동일하다고 검증되지 않았습니다. 성과는 미래 수익을 보장하지 않습니다.', icon='⚠️')
 
 EXAMPLES = {'🇺🇸 미국': {'SOXX': 'SOXX', 'TQQQ': 'TQQQ', 'SPY': 'SPY', 'NVDA': 'NVDA'},
@@ -72,6 +72,13 @@ except Exception as exc:
     st.error(f'데이터 조회/계산 실패: {exc}')
     st.stop()
 
+st.subheader('SCR 신호 발생 횟수')
+sig_cols = st.columns(4)
+sig_cols[0].metric('매수 신호', f"{stats['Buy signals']}회")
+sig_cols[1].metric('매도 신호', f"{stats['Sell signals']}회")
+sig_cols[2].metric('완료된 매수→매도', f"{stats['Trades']}회")
+sig_cols[3].metric('마지막 봉 미체결 신호', '있음' if stats['Unfilled final signal'] else '없음')
+st.caption('신호 횟수는 표시된 가격 데이터 범위의 조건 충족 횟수이며, 매매 체결 횟수와 구분합니다. 현재 전략은 매수·매도 신호가 교대로 발생하는 상태형입니다.')
 cols = st.columns(5)
 for col, key, fmt in zip(cols, ['Return %','CAGR %','MDD %','Win rate %','Trades'], ['{:.1f}%']*4+['{}']):
     val = stats[key]
@@ -91,6 +98,12 @@ for row, line, top, bottom in [(2,'S',p.stoch_ob,p.stoch_os),(3,'C',p.cci_ob,p.c
     fig.add_trace(go.Scatter(x=data.index, y=data[line],mode='lines',name=line,line=dict(width=1.6)),row=row,col=1)
     fig.add_hline(y=top,line_dash='dot',line_color='#db6674',row=row,col=1)
     fig.add_hline(y=bottom,line_dash='dot',line_color='#35aaaf',row=row,col=1)
+# Shared-x-axis vertical signal lines span OHLC, S, C, R panels.
+# Red = buy signal date; Blue = sell signal date (not next-bar execution).
+for signal_name, color in [('Buy', '#e53935'), ('Sell', '#1565c0')]:
+    for signal_date in data.index[data[signal_name]]:
+        fig.add_vline(x=signal_date.to_pydatetime(), line_color=color,
+                      line_width=1.7, opacity=.82, row='all', col=1)
 fig.update_layout(height=850,xaxis_rangeslider_visible=False,legend_orientation='h',margin=dict(l=35,r=20,t=60,b=20))
 st.plotly_chart(fig,use_container_width=True)
 
@@ -100,7 +113,19 @@ for name in ['Equity','Buy & hold']:
     eq_fig.add_trace(go.Scatter(x=equity.index,y=equity[name],name={'Equity':'SCR','Buy & hold':'단순보유'}[name]))
 eq_fig.update_layout(height=320,margin=dict(l=25,r=20,t=20,b=30),yaxis_title='초기 투자금 기준 자산')
 st.plotly_chart(eq_fig,use_container_width=True)
-st.subheader('종료된 거래 내역')
+st.subheader('모든 SCR 신호 발생 날짜와 지표값')
+signal_rows = data.loc[data['Buy'] | data['Sell'], ['Open', 'Close', 'S', 'C', 'R', 'Buy', 'Sell']].copy()
+if signal_rows.empty:
+    st.info('선택한 기간에 SCR 신호가 없습니다.')
+else:
+    signal_rows.insert(0, '신호', ['매수' if b else '매도' for b in signal_rows['Buy']])
+    signal_rows = signal_rows.drop(columns=['Buy', 'Sell']).rename(columns={'Open':'시가', 'Close':'종가', 'S':'Stochastic', 'C':'CCI', 'R':'RSI'})
+    signal_rows.index.name = '신호 확정일'
+    st.dataframe(signal_rows.style.format({'시가':'{:,.2f}', '종가':'{:,.2f}', 'Stochastic':'{:.2f}', 'CCI':'{:.2f}', 'RSI':'{:.2f}'}), use_container_width=True)
+    st.download_button('전체 신호·지표 CSV 다운로드', signal_rows.to_csv().encode('utf-8-sig'), file_name=f'{ticker}_scr_all_signals.csv', mime='text/csv')
+st.caption('차트의 빨간 세로선은 매수 신호 확정일, 파란 세로선은 매도 신호 확정일입니다. 두 선은 가격·Stochastic·CCI·RSI 패널을 모두 가로지릅니다. 실제 매매 가격은 다음 봉 시가입니다.')
+st.subheader('매수 신호부터 매도 신호까지 · 거래별 수익률')
+st.caption('수익률은 신호가 확정된 봉의 종가가 아니라 다음 봉 시가 매수·매도 기준이며, 매수·매도 수수료를 차감합니다. 신호일과 체결일을 각각 표시합니다.')
 if trades.empty:
     st.write('완료된 거래가 없습니다. (신호가 없거나 매수 포지션이 아직 열려 있을 수 있습니다.)')
 else:
@@ -109,6 +134,8 @@ else:
 st.download_button('지표·시세 CSV',data.to_csv().encode('utf-8-sig'),file_name=f'{ticker}_scr_signals.csv',mime='text/csv')
 with st.expander('모델 가정·한계 (중요)'):
     st.markdown('''- **SCR 원문 미확정**: 3개 과매도/과매수 조건을 각자 한 번 이상 충족한 뒤 세 값이 모두 기준선을 회복/이탈하면 신호. 같은 봉일 필요 없음. 신호 이력은 포지션 전환 때 초기화됨.
+- **세로선**: 빨간색은 매수 신호, 파란색은 매도 신호로 봉 마감 확정일을 표시합니다. 선은 4개 패널에 공통 적용됩니다.
+- **신호 빈도**: 매수와 매도가 번갈아 발생하는 포지션 상태형 SCR 횟수입니다. 미보유/보유와 무관한 독립 신호 전수 탐색과는 다릅니다.
 - **미래정보 방지**: 봉 마감으로 확인한 신호를 다음 봉 시가에 체결. 다만 야후 수정가격의 배당 반영은 거래 가능한 실제 체결가와 차이가 있을 수 있음.
 - **체결**: 전액 매수/전량 매도, 롱 전용, 소수점 주식 허용, 슬리피지·세금·환전비용·현금이자 제외.
 - **주봉·월봉**: 일별 시세를 집계. 현재 진행 중인 마지막 주/월의 불완전 봉은 실시간 조회에서 포함될 수 있으므로 장중 실거래 신호로 사용 금지.

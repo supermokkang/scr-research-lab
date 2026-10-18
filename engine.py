@@ -96,7 +96,7 @@ def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame
         raise ValueError('Empty price data')
     cash = float(p.initial)
     units = 0.0
-    entry_date, entry_price, entry_equity = None, None, None
+    entry_date, entry_price, entry_equity, entry_signal_date = None, None, None, None
     equity_rows = []
     trades = []
     for i, (date, row) in enumerate(d.iterrows()):
@@ -109,18 +109,20 @@ def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame
             units = cash / (op * (1 + p.commission/100))
             cash = 0.0
             entry_date, entry_price = date, op
+            entry_signal_date = d.index[i-1]
         elif i > 0 and d['Sell'].iloc[i-1] and units > 0:
             cash = units * op * (1 - p.commission/100)
-            trades.append({'Entry': entry_date, 'Exit': date, 'Entry price': entry_price,
+            trades.append({'Buy signal': entry_signal_date, 'Sell signal': d.index[i-1],
+                           'Entry': entry_date, 'Exit': date, 'Entry price': entry_price,
                            'Exit price': op, 'Return %': (cash/entry_equity-1)*100})
             units = 0
-            entry_date, entry_price, entry_equity = None, None, None
+            entry_date, entry_price, entry_equity, entry_signal_date = None, None, None, None
         equity_rows.append((date, cash + units * cl))
     equity = pd.DataFrame(equity_rows, columns=['Date', 'Equity']).set_index('Date')
     equity['Buy & hold'] = p.initial * d['Close'] / float(d['Open'].iloc[0])
     equity['Buy & hold'] *= (1 - p.commission/100)  # initial entry commission approximation
     drawdown = equity['Equity'] / equity['Equity'].cummax() - 1
-    td = pd.DataFrame(trades, columns=['Entry', 'Exit', 'Entry price', 'Exit price', 'Return %'])
+    td = pd.DataFrame(trades, columns=['Buy signal', 'Sell signal', 'Entry', 'Exit', 'Entry price', 'Exit price', 'Return %'])
     years = max((d.index[-1] - d.index[0]).days / 365.25, 1/365.25)
     final_eq = float(equity['Equity'].iloc[-1])
     metrics = {
@@ -129,6 +131,8 @@ def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame
         'MDD %': drawdown.min()*100,
         'B&H return %': (float(equity['Buy & hold'].iloc[-1])/p.initial-1)*100,
         'Trades': len(td),
+        'Buy signals': int(d['Buy'].sum()),
+        'Sell signals': int(d['Sell'].sum()),
         'Win rate %': (td['Return %'] > 0).mean()*100 if len(td) else np.nan,
         'Open position': bool(units > 0),
         'Unfilled final signal': bool(d['Buy'].iloc[-1] or d['Sell'].iloc[-1]),
