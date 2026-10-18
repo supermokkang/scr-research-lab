@@ -53,39 +53,54 @@ def indicators(ohlc: pd.DataFrame, p: Params) -> pd.DataFrame:
     return d
 
 
-def signals(d: pd.DataFrame, p: Params) -> pd.DataFrame:
-    """Each leg must have entered its zone; trigger when ALL are outside.
-    Entry/exit phases alternate. A setup is retained until the next execution.
-    Signal on bar close; execution the NEXT available bar's open.
+def signals(d: pd.DataFrame, p: Params, mode: str = 'strict', window: int = 8) -> pd.DataFrame:
+    """Two explicitly distinct SCR interpretations, evaluated at completed bar close.
+
+    strict: ALL 3 indicators cross their own threshold on the SAME bar.
+            Thus all 3 must be beyond their thresholds on the preceding bar.
+    staged: each indicator visited its extreme within the previous `window` bars,
+            and on the signal bar all have recovered together, with at least
+            one genuinely crossing on the current bar. State is not perpetual.
+    Buy/sell alternate. These are interpretations, not a verified original formula.
     """
+    if mode not in ('strict', 'staged'):
+        raise ValueError('Unknown SCR mode')
+    if window < 1:
+        raise ValueError('window must be >= 1')
     d = d.copy()
     buy = np.zeros(len(d), dtype=bool)
     sell = np.zeros(len(d), dtype=bool)
+    v = d[['S', 'C', 'R']].to_numpy(dtype=float)
+    low = np.array([p.stoch_os, p.cci_os, p.rsi_os])
+    high = np.array([p.stoch_ob, p.cci_ob, p.rsi_ob])
     phase = 'entry'
-    seen = [False, False, False]
-    for i, (_, r) in enumerate(d.iterrows()):
-        if not np.isfinite([r['S'], r['C'], r['R']]).all():
+    for i in range(1, len(d)):
+        current, previous = v[i], v[i-1]
+        if not (np.isfinite(current).all() and np.isfinite(previous).all()):
             continue
+        threshold = low if phase == 'entry' else high
         if phase == 'entry':
-            seen[0] |= r['S'] < p.stoch_os
-            seen[1] |= r['C'] < p.cci_os
-            seen[2] |= r['R'] < p.rsi_os
-            if all(seen) and r['S'] > p.stoch_os and r['C'] > p.cci_os and r['R'] > p.rsi_os:
+            crossing = (previous <= low) & (current > low)
+            above = current > low
+            extreme = v[max(0, i-window):i] <= low
+        else:
+            crossing = (previous >= high) & (current < high)
+            above = current < high
+            extreme = v[max(0, i-window):i] >= high
+        if mode == 'strict':
+            triggered = bool(crossing.all())
+        else:
+            triggered = bool(above.all() and crossing.any() and extreme.any(axis=0).all())
+        if triggered:
+            if phase == 'entry':
                 buy[i] = True
                 phase = 'exit'
-                seen = [False, False, False]
-        else:
-            seen[0] |= r['S'] > p.stoch_ob
-            seen[1] |= r['C'] > p.cci_ob
-            seen[2] |= r['R'] > p.rsi_ob
-            if all(seen) and r['S'] < p.stoch_ob and r['C'] < p.cci_ob and r['R'] < p.rsi_ob:
+            else:
                 sell[i] = True
                 phase = 'entry'
-                seen = [False, False, False]
     d['Buy'] = buy
     d['Sell'] = sell
     return d
-
 
 def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Long-only, all-in, full shares fractional permitted, commissions paid per side.

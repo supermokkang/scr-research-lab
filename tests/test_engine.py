@@ -57,3 +57,31 @@ def test_signal_counts_and_trade_dates():
     assert tr.iloc[0]['Sell signal'] == d.index[3]
     assert tr.iloc[0]['Entry'] == d.index[2]
     assert tr.iloc[0]['Exit'] == d.index[4]
+
+
+def test_strict_requires_same_bar_crossing():
+    d = sample(6)
+    d['S'] = [10, 10, 25, 50, 85, 75]
+    d['C'] = [-120, -110, -90, 10, 120, 90]
+    d['R'] = [25, 20, 35, 55, 75, 65]
+    r = signals(d, Params(), mode='strict')
+    assert list(r.index[r.Buy]) == [d.index[2]]
+    assert list(r.index[r.Sell]) == [d.index[5]]
+
+def test_strict_ignores_staggered_crossings():
+    d = sample(5)
+    d['S'] = [10, 30, 40, 60, 80]
+    d['C'] = [-120, -130, -90, 10, 110]
+    d['R'] = [20, 25, 25, 35, 50]
+    r = signals(d, Params(), mode='strict')
+    assert not r.Buy.any()
+    r2 = signals(d, Params(), mode='staged', window=4)
+    assert r2.Buy.iloc[3]
+
+def test_staged_expiration():
+    d = sample(7)
+    d['S'] = [10, 10, 40, 40, 40, 40, 40]
+    d['C'] = [-130, -130, -80, -70, -70, -70, -70]
+    d['R'] = [40, 40, 50, 50, 50, 20, 40]
+    r = signals(d, Params(), mode='staged', window=2)
+    assert not r.Buy.any()
