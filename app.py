@@ -9,7 +9,7 @@ from engine import Params, indicators, signals, run_backtest, resample_ohlc
 
 st.set_page_config(page_title='SCR Research Lab', page_icon='📈', layout='wide')
 st.title('📈 SCR Research Lab · 무료 백테스트')
-st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 순차 탈출 신호 연구 v1.0')
+st.caption('한국 · 미국 · 일본 | Fast %K(5), %D(3) + CCI(20) + RSI(14) | SCR 순차 탈출 신호 연구 v1.1')
 st.warning('이 전략은 캡처에 있는 SCR 원문과 동일하다고 검증되지 않았습니다. 성과는 미래 수익을 보장하지 않습니다.', icon='⚠️')
 
 EXAMPLES = {'🇺🇸 미국': {'SOXX': 'SOXX', 'TQQQ': 'TQQQ', 'SPY': 'SPY', 'NVDA': 'NVDA'},
@@ -137,15 +137,15 @@ for col, name, symbol, color in [('Buy','매수 신호','triangle-up','#00aa71')
     fig.add_trace(go.Scatter(x=points.index,y=points.Low*.98 if col=='Buy' else points.High*1.02,
                              mode='markers',marker=dict(symbol=symbol,size=13,color=color),name=name),row=1,col=1)
 for row, line, top, bottom in [(2,'S',p.stoch_ob,p.stoch_os),(3,'C',p.cci_ob,p.cci_os),(4,'R',p.rsi_ob,p.rsi_os)]:
-    fig.add_trace(go.Scatter(x=data.index, y=data[line],mode='lines',name=line,line=dict(width=1.6)),row=row,col=1)
+    fig.add_trace(go.Scatter(x=data.index, y=data[line],mode='lines',name=line,line=dict(width=1.6, color='#242424' if line == 'S' else None)),row=row,col=1)
     fig.add_hline(y=top,line_dash='dot',line_color='#db6674',row=row,col=1)
     fig.add_hline(y=bottom,line_dash='dot',line_color='#35aaaf',row=row,col=1)
     sig_col = {'S':'S_signal','C':'C_signal','R':'R_signal'}[line]
     if line == 'S':
-        fig.add_trace(go.Scatter(x=data.index, y=data['S_main'], mode='lines', name='Sto Fast %K', line=dict(width=1.7, color='#242424')),row=row,col=1)
+        fig.add_trace(go.Scatter(x=data.index, y=data['S_signal'], mode='lines', name='Sto %D(3)', line=dict(width=1.1, color='#669bc5')),row=row,col=1)
     if line != 'S':
         fig.add_trace(go.Scatter(x=data.index, y=data[sig_col], mode='lines', name=f'{line} Signal', line=dict(width=1.1, color='#669bc5')),row=row,col=1)
-    shade_extreme(fig, data, 'S_main' if line == 'S' else line, top, bottom, row, 1)
+    shade_extreme(fig, data, line, top, bottom, row, 1)
 # Shared-x-axis vertical signal lines span OHLC, S, C, R panels.
 # Red = buy signal date; Blue = sell signal date (not next-bar execution).
 for signal_name, color in [('Buy', '#e53935'), ('Sell', '#1565c0')]:
@@ -197,11 +197,11 @@ if multi_view:
             multi.add_hline(y=upper,line_color='#db6674',line_dash='dot',line_width=1,row=row,col=col)
             multi.add_hline(y=lower,line_color='#35aaaf',line_dash='dot',line_width=1,row=row,col=col)
             if field == 'S':
-                multi.add_trace(go.Scatter(x=f.index, y=f['S_main'], mode='lines', line=dict(color='#222222',width=1.3),showlegend=False),row=row,col=col)
+                multi.add_trace(go.Scatter(x=f.index, y=f['S_signal'], mode='lines', line=dict(color='#729bcc',width=1),showlegend=False),row=row,col=col)
             if field != 'S':
                 multi.add_trace(go.Scatter(x=f.index, y=f[{'C':'C_signal','R':'R_signal'}[field]], mode='lines',
                                            line=dict(color='#729bcc',width=1),showlegend=False,hoverinfo='skip'),row=row,col=col)
-            shade_extreme(multi, f, 'S_main' if field == 'S' else field, upper, lower, row, col)
+            shade_extreme(multi, f, field, upper, lower, row, col)
         # A single signal date is mirrored to all twelve subplots.
         for sigdate, signal, color in base_events:
             if left_bound is not None and sigdate < left_bound:
@@ -265,6 +265,16 @@ eq_fig = go.Figure()
 eq_fig.add_trace(go.Scatter(x=equity.index, y=equity['Equity'], name='SCR 전략', line=dict(color='#467fd0', width=2)))
 eq_fig.update_layout(height=280, margin=dict(l=25,r=20,t=20,b=30), yaxis_title='전략 평가금액')
 st.plotly_chart(eq_fig,use_container_width=True)
+st.subheader('SCR 신호 타이밍 검증 · 세 지표 탈출 날짜')
+st.caption('세 지표가 각각 기준선을 마지막으로 넘어온 봉과 최종 신호일을 구분합니다. 세 지표 중 마지막 탈출이 발생한 날이 신호일입니다. 주봉 신호는 해당 주 마지막 거래일 종가에 확정하며, 실제 백테스트 체결은 다음 주 첫 거래일 시가입니다.')
+audit = data.loc[data['Buy'] | data['Sell'], ['Buy','S_escape_at','C_escape_at','R_escape_at','Last_escaped']].copy()
+if not audit.empty:
+    audit.insert(0, '신호 구분', audit['Buy'].map({True:'매수',False:'매도'}))
+    audit = audit.drop(columns=['Buy']).rename(columns={'S_escape_at':'Stoch 탈출일','C_escape_at':'CCI 탈출일','R_escape_at':'RSI 탈출일','Last_escaped':'마지막 탈출 지표'})
+    audit.index.name='신호 확정일 (봉 마감)'
+    st.dataframe(audit, use_container_width=True)
+    st.download_button('신호별 3지표 탈출 날짜 CSV', audit.to_csv().encode('utf-8-sig'), file_name=f'{ticker}_scr_escape_audit.csv', mime='text/csv')
+st.info('차트의 빨간/파란 세로선은 **봉 마감 신호 확정일**입니다. 실제 매수·매도 체결은 다음 봉 시가이므로 날짜가 다음 주로 표시될 수 있습니다. 원문 차트와 비교할 때는 신호 확정일로 비교하세요.')
 st.subheader('모든 SCR 신호 발생 날짜와 지표값')
 signal_rows = data.loc[data['Buy'] | data['Sell'], ['Open', 'Close', 'S', 'C', 'R', 'Buy', 'Sell']].copy()
 if signal_rows.empty:
@@ -289,6 +299,7 @@ else:
 st.download_button('지표·시세 CSV',data.to_csv().encode('utf-8-sig'),file_name=f'{ticker}_scr_signals.csv',mime='text/csv')
 with st.expander('모델 가정·한계 (중요)'):
     st.markdown("""- **한 가지 SCR 규칙만 사용**: 세 지표가 각자 과매도를 경험한 뒤 순차적으로 기준선을 위로 탈출, 마지막 탈출 시 매수. 매도는 과매수에서 반대 방향.
+- **Stochastic 기준**: 검은 Fast %K(5)로 과매도/과매수 이탈을 판정하고 파란 %D(3)는 보조 표시합니다. HTS와 계산방식 동일 여부는 검증 전입니다.
 - **기간 제한 없음**: 과거 극단구간 이력을 무기한 보유하므로 원문과 날짜 일치 검증이 필요합니다.
 - **상태형 신호**: 매수 후 매도까지는 추가 매수를 표시하지 않습니다.
 - **거래**: 봉 마감 확정 신호 후 다음 봉 시가 매매. 수수료 반영, 슬리피지·세금 제외.

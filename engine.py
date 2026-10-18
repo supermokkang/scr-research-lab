@@ -26,7 +26,7 @@ def indicators(ohlc: pd.DataFrame, p: Params) -> pd.DataFrame:
     lo = d['Low'].rolling(p.stoch_n, min_periods=p.stoch_n).min()
     hi = d['High'].rolling(p.stoch_n, min_periods=p.stoch_n).max()
     raw = 100 * (d['Close'] - lo) / (hi - lo).replace(0, np.nan)
-    d['S'] = raw.rolling(p.stoch_smooth, min_periods=p.stoch_smooth).mean()
+    d['S'] = raw  # Fast %K is the black main line in the user's HTS screenshots
     typical = (d['High'] + d['Low'] + d['Close']) / 3
     sma = typical.rolling(p.cci_n, min_periods=p.cci_n).mean()
     mean_dev = typical.rolling(p.cci_n, min_periods=p.cci_n).apply(lambda x: np.mean(np.abs(x - np.mean(x))), raw=True)
@@ -53,17 +53,19 @@ def indicators(ohlc: pd.DataFrame, p: Params) -> pd.DataFrame:
     # Original screenshots label CCI(20,10), RSI(14,6), Sto Fast(5,3).
     # The signal-line formula is an explicit hypothesis until platform settings are verified.
     d['S_main'] = raw
-    d['S_signal'] = d['S']
+    d['S_signal'] = raw.rolling(p.stoch_smooth, min_periods=p.stoch_smooth).mean()
     d['C_signal'] = d['C'].rolling(10, min_periods=10).mean()
     d['R_signal'] = d['R'].rolling(6, min_periods=6).mean()
     return d
 
 
 def signals(d: pd.DataFrame, p: Params) -> pd.DataFrame:
-    """Sole SCR interpretation: each of S,C,R has visited its extreme and
-    individually escaped it; emit the signal when the last escapes.
-    Buy and sell alternate, and only the active phase is tracked.
-    No arbitrary lookback expiry. Closed-bar values only.
+    """SCR: three independent extreme-zone entries followed by ordered or
+    unordered recoveries. Signal is stamped on the close of the bar where
+    the *last* outstanding indicator crosses its boundary.
+
+    Also expose each component's actual escape timestamp for auditing.
+    No future-bar values or discretionary one-bar shifting.
     """
     out = d.copy()
     v = out[['S', 'C', 'R']].to_numpy(dtype=float)
@@ -71,32 +73,46 @@ def signals(d: pd.DataFrame, p: Params) -> pd.DataFrame:
     highs = np.array([p.stoch_ob, p.cci_ob, p.rsi_ob])
     buys = np.zeros(len(out), dtype=bool)
     sells = np.zeros(len(out), dtype=bool)
+    stamp = {'S': [pd.NaT] * len(out), 'C': [pd.NaT] * len(out), 'R': [pd.NaT] * len(out)}
+    last_leg = [''] * len(out)
     phase = 'buy'
     visited = np.zeros(3, dtype=bool)
     escaped = np.zeros(3, dtype=bool)
+    escaped_at = [pd.NaT, pd.NaT, pd.NaT]
     for i, values in enumerate(v):
         if not np.isfinite(values).all():
             continue
         levels = lows if phase == 'buy' else highs
         extreme = values <= levels if phase == 'buy' else values >= levels
         safe = values > levels if phase == 'buy' else values < levels
+        crossed_this_bar = []
         for j in range(3):
             if extreme[j]:
                 visited[j] = True
                 escaped[j] = False
-            elif visited[j] and safe[j]:
+                escaped_at[j] = pd.NaT
+            elif visited[j] and safe[j] and not escaped[j]:
                 escaped[j] = True
-        if visited.all() and escaped.all():
+                escaped_at[j] = out.index[i]
+                crossed_this_bar.append('SCR'[j])
+        if visited.all() and escaped.all() and crossed_this_bar:
             if phase == 'buy':
                 buys[i] = True
                 phase = 'sell'
             else:
                 sells[i] = True
                 phase = 'buy'
+            for j, key in enumerate('SCR'):
+                stamp[key][i] = escaped_at[j]
+            last_leg[i] = ', '.join(crossed_this_bar)
             visited[:] = False
             escaped[:] = False
+            escaped_at = [pd.NaT, pd.NaT, pd.NaT]
     out['Buy'] = buys
     out['Sell'] = sells
+    for key in 'SCR':
+        out[f'{key}_escape_at'] = pd.to_datetime(stamp[key])
+    out['Last_escaped'] = last_leg
     return out
 
 def run_backtest(d: pd.DataFrame, p: Params) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
