@@ -9,7 +9,7 @@ from engine import Params, indicators, signals, run_backtest, resample_ohlc
 
 st.set_page_config(page_title='SCR Research Lab', page_icon='📈', layout='wide')
 st.title('📈 SCR Research Lab · 무료 백테스트')
-st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 원문 예시 기반 신호 연구 v0.6')
+st.caption('한국 · 미국 · 일본 | Stochastic + CCI + RSI | SCR 원문 예시 기반 신호 연구 v0.8')
 st.warning('이 전략은 캡처에 있는 SCR 원문과 동일하다고 검증되지 않았습니다. 성과는 미래 수익을 보장하지 않습니다.', icon='⚠️')
 
 EXAMPLES = {'🇺🇸 미국': {'SOXX': 'SOXX', 'TQQQ': 'TQQQ', 'SPY': 'SPY', 'NVDA': 'NVDA'},
@@ -52,9 +52,16 @@ with st.sidebar:
     ro = st.number_input('RSI 과매도', 1., 49., 30.)
     rb = st.number_input('RSI 과매수', 51., 99., 70.)
     st.header('③ SCR 판정 규칙')
-    mode_label = st.radio('매수·매도 동시 판정', ['엄격: 세 지표 모두 같은 봉에서 기준선 돌파', '순차: 최근 과열·침체 이력 후 동반 복귀'], index=0)
-    signal_mode = 'strict' if mode_label.startswith('엄격') else 'staged'
-    window = st.number_input('순차 판정 허용 봉 수', min_value=1, max_value=52, value=8, disabled=(signal_mode == 'strict'))
+    mode_label = st.radio('SCR 신호 판정', [
+        '원문 해석: 세 지표가 순차적으로 과매도 탈출 완료',
+        '이전 순차 모드: 최근 이력 후 동반 복귀',
+        '엄격: 세 지표 모두 같은 봉에서 기준선 돌파',
+        '참고 가설: Signal선 교차 기반',
+    ], index=0, help='기본 규칙은 S·C·R이 각각 과매도 진입 후 순서와 상관없이 과매도 기준선 위로 회복, 마지막 지표가 탈출한 봉에서 매수합니다. 매도는 반대입니다.')
+    signal_mode = ('sequential' if mode_label.startswith('원문') else
+                   'staged' if mode_label.startswith('이전') else
+                   'strict' if mode_label.startswith('엄격') else 'example')
+    window = st.number_input('각 지표 과매도·과매수 이력 유효 기간 (봉)', min_value=1, max_value=260, value=26, disabled=(signal_mode == 'strict'), help='예: 주봉 26은 26주 안에 세 지표의 탈출을 모두 마칠 때만 인정합니다. 원문에는 기간 제한이 명시되지 않아 연구용 설정입니다.')
     fee = st.number_input('한쪽 거래 수수료 (%)', 0., 2., 0.10, step=0.01)
     capital = st.number_input('초기 투자금 (가격 표시 통화)', 100., 1e9, 10000., step=1000.)
     execute = st.button('🚀 백테스트 실행', type='primary', use_container_width=True)
@@ -72,20 +79,41 @@ try:
         if len(frame) < max(p.cci_n, p.rsi_n, p.stoch_n+p.stoch_smooth)+5:
             st.error('해당 기간/주기에는 계산할 봉 수가 부족합니다. 데이터 범위를 늘리세요.')
             st.stop()
-        data = signals(indicators(frame, p), p, mode=signal_mode, window=int(window))
+        indicator_data = indicators(frame, p)
+        data = signals(indicator_data, p, mode=signal_mode, window=int(window))
+        sequential_count = signals(indicator_data, p, mode='sequential', window=int(window))
+        strict_count = signals(indicator_data, p, mode='strict', window=int(window))
+        staged_count = signals(indicator_data, p, mode='staged', window=int(window))
+        example_count = signals(indicator_data, p, mode='example', window=int(window))
         equity, trades, stats = run_backtest(data, p)
 except Exception as exc:
     st.error(f'데이터 조회/계산 실패: {exc}')
     st.stop()
 
 st.subheader('SCR 신호 발생 횟수')
+with st.expander('왜 신호가 0회인지? · 판정 방식 비교', expanded=not bool(data['Buy'].any())):
+    st.write('모드에 따라 *신호 계산 조건이 달라서* 결과가 다릅니다. 원문의 실제 계산식은 아직 미확정입니다.')
+    comparison = pd.DataFrame([
+        {'판정 방식':f'순차 탈출 완료 (최근 {int(window)}봉)', '매수 신호':int(sequential_count.Buy.sum()), '매도 신호':int(sequential_count.Sell.sum())},
+        {'판정 방식':'사진 사례 기반 Signal선 회복(가설)', '매수 신호':int(example_count.Buy.sum()), '매도 신호':int(example_count.Sell.sum())},
+        {'판정 방식':'엄격 동시 돌파', '매수 신호':int(strict_count.Buy.sum()), '매도 신호':int(strict_count.Sell.sum())},
+        {'판정 방식':f'순차 회복 (최근 {int(window)}봉)', '매수 신호':int(staged_count.Buy.sum()), '매도 신호':int(staged_count.Sell.sum())},
+    ])
+    st.dataframe(comparison, hide_index=True, use_container_width=True)
+    if not data.Buy.any():
+        st.warning('선택한 모드의 매수 신호가 0회입니다. 데이터 로딩 오류라고 단정할 수 없습니다. 위 표에서 여러 판정 규칙을 비교해 주세요.')
+
 sig_cols = st.columns(4)
 sig_cols[0].metric('매수 신호', f"{stats['Buy signals']}회")
 sig_cols[1].metric('매도 신호', f"{stats['Sell signals']}회")
 sig_cols[2].metric('완료된 매수→매도', f"{stats['Trades']}회")
 sig_cols[3].metric('마지막 봉 미체결 신호', '있음' if stats['Unfilled final signal'] else '없음')
 st.caption(f'판정: {mode_label}. 신호는 매수·매도가 번갈아 발생하는 상태형이며 미보유/보유 여부와 독립적인 전체 후보 횟수는 아닙니다.')
-if signal_mode == 'strict':
+if signal_mode == 'sequential':
+    st.info('기본 규칙: S·C·R 각각 과매도 기준선 이하를 경험한 후 **순서와 관계없이** 기준선 위로 탈출합니다. **세 번째 지표가 회복을 완료한 봉에서 매수**합니다. 매도는 세 지표가 과매수 기준선 이상을 경험한 후 모두 기준선 아래로 탈출했을 때 발생합니다. 각 지표의 이력 유효기간은 설정값을 사용합니다.')
+elif signal_mode == 'example':
+    st.info('사진 기반 가설: 최근 설정된 봉 수 안에 S·C·R 모두 과매도를 경험한 뒤, Stochastic(5)의 본선과 Signal(3), CCI(20)와 Signal(10), RSI(14)와 Signal(6)이 모두 상승 우위가 되고 적어도 하나가 현재 봉에서 Signal선을 상향 교차하면 매수. 매도는 역방향입니다. 원문과 동일한 검증된 공식은 아닙니다.')
+elif signal_mode == 'strict':
     st.info('원문 문구를 문자 그대로 적용: 이전 봉에서 S·C·R 모두 과매도 기준 이하 → 이번 봉에서 모두 초과하면 매수. 매도는 이전 봉 모두 과매수 이상 → 이번 봉 모두 미만. 같은 봉 동시 돌파는 매우 드물 수 있습니다.')
 else:
     st.info(f'대안 가설: 최근 {int(window)}봉 사이 세 지표가 각각 과매도/과매수 상태를 경험하고, 현재 봉에 적어도 하나가 기준선을 돌파하며 세 지표가 모두 정상 범위로 돌아오면 신호. 원문 공식으로 확정된 방식은 아닙니다.')
@@ -93,9 +121,44 @@ cols = st.columns(5)
 for col, key, fmt in zip(cols, ['Return %','CAGR %','MDD %','Win rate %','Trades'], ['{:.1f}%']*4+['{}']):
     val = stats[key]
     col.metric({'Return %':'SCR 수익률', 'CAGR %':'SCR CAGR','MDD %':'SCR MDD','Win rate %':'종료된 거래 승률','Trades':'완료 거래수'}[key], fmt.format(val) if pd.notna(val) else 'N/A')
-st.caption(f"동일 투자금 단순보유 수익률: {stats['B&H return %']:.1f}% · 현재 미청산 포지션: {'있음' if stats['Open position'] else '없음'} · 종료되지 않은 거래는 승률에서 제외")
+st.caption(f"현재 미청산 포지션: {'있음' if stats['Open position'] else '없음'} · 종료되지 않은 거래는 승률에서 제외")
 if stats['Unfilled final signal']:
     st.warning('마지막 봉에 발생한 신호는 다음 봉이 없어 미체결 처리됐습니다.')
+
+def shade_extreme(fig, frame, field, high, low, row, col, showlegend=False):
+    """Fill *only* contiguous indicator excursion areas with no cross-gap interpolation."""
+    import numpy as np
+    x = frame.index
+    values = frame[field].to_numpy(dtype=float)
+    step = x.to_series().diff().median()
+    if pd.isna(step):
+        step = pd.Timedelta(days=1)
+    for threshold, over, color in ((high, True, 'rgba(220,50,75,.52)'),
+                                   (low, False, 'rgba(0,174,183,.52)')):
+        mask = np.isfinite(values) & ((values > threshold) if over else (values < threshold))
+        groups = []
+        active = []
+        for idx, ok in enumerate(mask):
+            if ok:
+                active.append(idx)
+            elif active:
+                groups.append(active)
+                active = []
+        if active:
+            groups.append(active)
+        for group in groups:
+            if len(group) == 1:
+                i = group[0]
+                xx = [x[i]-step*.38, x[i]+step*.38]
+                yy = [values[i]]*2
+            else:
+                xx = [x[i] for i in group]
+                yy = [values[i] for i in group]
+            path_x = [xx[0], *xx, xx[-1], xx[0]]
+            path_y = [threshold, *yy, threshold, threshold]
+            fig.add_trace(go.Scatter(x=path_x, y=path_y, fill='toself',
+                        fillcolor=color, line=dict(width=0),
+                        mode='lines', hoverinfo='skip', showlegend=False),row=row,col=col)
 
 fig = make_subplots(rows=4, cols=1, shared_xaxes=True, vertical_spacing=.035,
                     row_heights=[.55,.15,.15,.15], subplot_titles=['OHLC + 매수/매도 신호','Stochastic','CCI','RSI'])
@@ -108,32 +171,19 @@ for row, line, top, bottom in [(2,'S',p.stoch_ob,p.stoch_os),(3,'C',p.cci_ob,p.c
     fig.add_trace(go.Scatter(x=data.index, y=data[line],mode='lines',name=line,line=dict(width=1.6)),row=row,col=1)
     fig.add_hline(y=top,line_dash='dot',line_color='#db6674',row=row,col=1)
     fig.add_hline(y=bottom,line_dash='dot',line_color='#35aaaf',row=row,col=1)
-    # Shade only the parts of an indicator that actually enter an extreme zone.
-    # Two traces form each colored region: its threshold and the indicator value.
-    # NaN breaks regions at bars where the threshold is not exceeded.
-    series = data[line]
-    for zone, mask, threshold, fill_color in [
-        ('과매수', series >= top, top, 'rgba(235,80,91,0.32)'),
-        ('과매도', series <= bottom, bottom, 'rgba(23,174,172,0.34)'),
-    ]:
-        threshold_y = pd.Series(float(threshold), index=data.index).where(mask)
-        shaded_y = series.where(mask)
-        fig.add_trace(go.Scatter(
-            x=data.index, y=threshold_y, mode='lines',
-            line=dict(width=0), showlegend=False, hoverinfo='skip',
-            connectgaps=False), row=row, col=1)
-        fig.add_trace(go.Scatter(
-            x=data.index, y=shaded_y, mode='lines',
-            line=dict(width=0), fill='tonexty', fillcolor=fill_color,
-            name=f'{zone} 영역', legendgroup=zone, showlegend=(row == 2),
-            hoverinfo='skip', connectgaps=False), row=row, col=1)
+    sig_col = {'S':'S_signal','C':'C_signal','R':'R_signal'}[line]
+    if line == 'S':
+        fig.add_trace(go.Scatter(x=data.index, y=data['S_main'], mode='lines', name='Sto Fast %K', line=dict(width=1.7, color='#242424')),row=row,col=1)
+    if line != 'S':
+        fig.add_trace(go.Scatter(x=data.index, y=data[sig_col], mode='lines', name=f'{line} Signal', line=dict(width=1.1, color='#669bc5')),row=row,col=1)
+    shade_extreme(fig, data, 'S_main' if line == 'S' else line, top, bottom, row, 1)
 # Shared-x-axis vertical signal lines span OHLC, S, C, R panels.
 # Red = buy signal date; Blue = sell signal date (not next-bar execution).
 for signal_name, color in [('Buy', '#e53935'), ('Sell', '#1565c0')]:
     for signal_date in data.index[data[signal_name]]:
         fig.add_vline(x=signal_date.to_pydatetime(), line_color=color,
                       line_width=1.7, opacity=.82, row='all', col=1)
-fig.update_layout(height=850,xaxis_rangeslider_visible=False,legend_orientation='h',margin=dict(l=35,r=20,t=60,b=20))
+fig.update_layout(barmode='overlay',height=850,xaxis_rangeslider_visible=False,legend_orientation='h',margin=dict(l=35,r=20,t=60,b=20))
 if multi_view:
     # Exactly ONE authoritative set of SCR signals: the user-selected timeframe.
     # Supporting timeframes have indicators only. No independent buy/sell signals.
@@ -177,14 +227,12 @@ if multi_view:
                                        name=field,showlegend=False),row=row,col=col)
             multi.add_hline(y=upper,line_color='#db6674',line_dash='dot',line_width=1,row=row,col=col)
             multi.add_hline(y=lower,line_color='#35aaaf',line_dash='dot',line_width=1,row=row,col=col)
-            for mask, threshold, shade in [(series>=upper,upper,'rgba(235,80,91,.30)'),
-                                            (series<=lower,lower,'rgba(23,174,172,.32)')]:
-                multi.add_trace(go.Scatter(x=f.index,y=pd.Series(float(threshold),index=f.index).where(mask),
-                                           mode='lines',line=dict(width=0),showlegend=False,
-                                           hoverinfo='skip',connectgaps=False),row=row,col=col)
-                multi.add_trace(go.Scatter(x=f.index,y=series.where(mask),mode='lines',
-                                           line=dict(width=0),fill='tonexty',fillcolor=shade,
-                                           showlegend=False,hoverinfo='skip',connectgaps=False),row=row,col=col)
+            if field == 'S':
+                multi.add_trace(go.Scatter(x=f.index, y=f['S_main'], mode='lines', line=dict(color='#222222',width=1.3),showlegend=False),row=row,col=col)
+            if field != 'S':
+                multi.add_trace(go.Scatter(x=f.index, y=f[{'C':'C_signal','R':'R_signal'}[field]], mode='lines',
+                                           line=dict(color='#729bcc',width=1),showlegend=False,hoverinfo='skip'),row=row,col=col)
+            shade_extreme(multi, f, 'S_main' if field == 'S' else field, upper, lower, row, col)
         # A single signal date is mirrored to all twelve subplots.
         for sigdate, signal, color in base_events:
             if left_bound is not None and sigdate < left_bound:
@@ -195,7 +243,7 @@ if multi_view:
         if left_bound is not None:
             multi.update_xaxes(range=[left_bound,last_date + pd.Timedelta(days=14)],col=col)
         multi.update_xaxes(rangeslider_visible=False,row=1,col=col)
-    multi.update_layout(height=780,margin=dict(l=25,r=12,t=50,b=28),
+    multi.update_layout(barmode='overlay',height=780,margin=dict(l=25,r=12,t=50,b=28),
                         showlegend=False,hovermode='x',dragmode='zoom')
     for rr, title in [(1,'가격'),(2,'Stoch'),(3,'CCI'),(4,'RSI')]:
         multi.update_yaxes(title_text=title,row=rr,col=1)
@@ -243,11 +291,10 @@ if multi_view:
 else:
     st.plotly_chart(fig,use_container_width=True)
 
-st.subheader('자산곡선 · SCR vs 단순보유')
+st.subheader('SCR 전략 자산곡선')
 eq_fig = go.Figure()
-for name in ['Equity','Buy & hold']:
-    eq_fig.add_trace(go.Scatter(x=equity.index,y=equity[name],name={'Equity':'SCR','Buy & hold':'단순보유'}[name]))
-eq_fig.update_layout(height=320,margin=dict(l=25,r=20,t=20,b=30),yaxis_title='초기 투자금 기준 자산')
+eq_fig.add_trace(go.Scatter(x=equity.index, y=equity['Equity'], name='SCR 전략', line=dict(color='#467fd0', width=2)))
+eq_fig.update_layout(height=280, margin=dict(l=25,r=20,t=20,b=30), yaxis_title='전략 평가금액')
 st.plotly_chart(eq_fig,use_container_width=True)
 st.subheader('모든 SCR 신호 발생 날짜와 지표값')
 signal_rows = data.loc[data['Buy'] | data['Sell'], ['Open', 'Close', 'S', 'C', 'R', 'Buy', 'Sell']].copy()
@@ -261,7 +308,7 @@ else:
     signal_rows.index.name = '신호 확정일'
     st.dataframe(signal_rows.style.format({'시가':'{:,.2f}', '종가':'{:,.2f}', 'Stochastic':'{:.2f}', 'CCI':'{:.2f}', 'RSI':'{:.2f}', '이전 S':'{:.2f}', '이전 C':'{:.2f}', '이전 R':'{:.2f}'}), use_container_width=True)
     st.download_button('전체 신호·지표 CSV 다운로드', signal_rows.to_csv().encode('utf-8-sig'), file_name=f'{ticker}_scr_all_signals.csv', mime='text/csv')
-st.caption('지표가 과매수 기준을 넘으면 붉은색, 과매도 기준 아래로 내려가면 청록색으로 면적을 채웁니다. 기준선과 영역은 왼쪽 설정값에 따라 바뀝니다.')
+st.caption('과매수는 빨간색, 과매도는 청록색으로 해당 봉의 초과분에만 채색합니다. 떨어진 구간은 서로 연결되지 않습니다.')
 st.caption('차트의 빨간 세로선은 매수 신호 확정일, 파란 세로선은 매도 신호 확정일입니다. 두 선은 가격·Stochastic·CCI·RSI 패널을 모두 가로지릅니다. 실제 매매 가격은 다음 봉 시가입니다.')
 st.subheader('매수 신호부터 매도 신호까지 · 거래별 수익률')
 st.caption('수익률은 신호가 확정된 봉의 종가가 아니라 다음 봉 시가 매수·매도 기준이며, 매수·매도 수수료를 차감합니다. 신호일과 체결일을 각각 표시합니다.')
@@ -272,13 +319,13 @@ else:
     st.download_button('거래 내역 CSV',trades.to_csv(index=False).encode('utf-8-sig'),file_name=f'{ticker}_scr_trades.csv',mime='text/csv')
 st.download_button('지표·시세 CSV',data.to_csv().encode('utf-8-sig'),file_name=f'{ticker}_scr_signals.csv',mime='text/csv')
 with st.expander('모델 가정·한계 (중요)'):
-    st.markdown('''- **SCR 원문 미확정**: 엄격 모드에서는 전 봉에서 세 지표 모두 극단구간, 현재 봉에서 모두 돌파할 때만 신호. 순차 모드에서는 최근 설정한 봉 수 안에 각 지표가 극단구간을 경험하고 함께 복귀할 때 신호. 두 가지 모두 원문 제작자의 정확한 알고리즘으로 검증된 것은 아닙니다.
+    st.markdown('''- **SCR 원문 미확정**: 기본 순차 탈출은 세 지표의 탈출 완료 시점으로 판정하며 이력 유효기간은 실험용 설정입니다. 정확한 HTS 지표 공식·기간 제한은 아직 확인되지 않았습니다.
+- **기존 가설**: 엄격 모드에서는 전 봉에서 세 지표 모두 극단구간, 현재 봉에서 모두 돌파할 때만 신호. 순차 모드에서는 최근 설정한 봉 수 안에 각 지표가 극단구간을 경험하고 함께 복귀할 때 신호. 두 가지 모두 원문 제작자의 정확한 알고리즘으로 검증된 것은 아닙니다.
 - **세로선**: 빨간색은 매수 신호, 파란색은 매도 신호로 봉 마감 확정일을 표시합니다. 선은 4개 패널에 공통 적용됩니다.
 - **신호 빈도**: 매수와 매도가 번갈아 발생하는 포지션 상태형 SCR 횟수입니다. 미보유/보유와 무관한 독립 신호 전수 탐색과는 다릅니다.
 - **미래정보 방지**: 봉 마감으로 확인한 신호를 다음 봉 시가에 체결. 다만 야후 수정가격의 배당 반영은 거래 가능한 실제 체결가와 차이가 있을 수 있음.
 - **체결**: 전액 매수/전량 매도, 롱 전용, 소수점 주식 허용, 슬리피지·세금·환전비용·현금이자 제외.
 - **주봉·월봉**: 일별 시세를 집계. 현재 진행 중인 마지막 주/월의 불완전 봉은 실시간 조회에서 포함될 수 있으므로 장중 실거래 신호로 사용 금지.
 - **성과**: 진입 중인 잔여 포지션은 종가로 평가. 마지막 봉 신호는 체결하지 않음. 승률은 완료 거래만 계산.
-- **단순보유**: 최초 시가에서 1회 매수한 비교 기준(수수료 단순 근사), 월봉 등 기간별 값은 평가 기준에 따라 달라질 수 있음.
 - **가격**: 야후가 돌려준 조정 OHLC로 계산, 일부 시장 데이터의 정확성·완전성 보장 불가. 상장폐지 종목 누락 등 생존편향 가능.
 ''')
