@@ -1,0 +1,56 @@
+
+name: SCR Backtest Report
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "Stock symbols"
+        required: true
+        default: "VOO"
+        type: string
+      period:
+        description: "Data period"
+        required: true
+        default: "10y"
+        type: string
+      timeframe:
+        description: "D, W, or M"
+        required: true
+        default: "W"
+        type: choice
+        options:
+          - D
+          - W
+          - M
+
+permissions:
+  contents: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run SCR backtest
+        env:
+          SYMBOLS: ${{ inputs.symbols }}
+          PERIOD: ${{ inputs.period }}
+          TIMEFRAME: ${{ inputs.timeframe }}
+        run: python scripts/run_backtest.py
+
+      - name: Save report
+        uses: actions/upload-artifact@v4
+        with:
+          name: scr-backtest-report
+          path: reports/
