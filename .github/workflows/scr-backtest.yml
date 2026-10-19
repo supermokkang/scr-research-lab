@@ -13,48 +13,43 @@ on:
         required: true
         default: "10y"
         type: choice
-        options:
-          - 1y
-          - 2y
-          - 5y
-          - 10y
-          - max
+        options: [1y, 2y, 5y, 10y, max]
       timeframe:
         description: "D, W, or M"
         required: true
         default: "W"
         type: choice
-        options:
-          - D
-          - W
-          - M
+        options: [D, W, M]
+  issues:
+    types: [opened]
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   backtest:
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && github.event.issue.user.login == 'supermokkang' && startsWith(github.event.issue.title, 'SCR BT: '))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
         run: pip install -r requirements.txt
-
-      - name: Run SCR backtest
+      - name: Run SCR backtest (manual)
+        if: github.event_name == 'workflow_dispatch'
         env:
           SYMBOLS: ${{ inputs.symbols }}
           PERIOD: ${{ inputs.period }}
           TIMEFRAME: ${{ inputs.timeframe }}
-        run: |
-          python -m scripts.scr_runner --symbols "$SYMBOLS" --period "$PERIOD" --timeframe "$TIMEFRAME" --output reports
-
+        run: python -m scripts.scr_runner --symbols "$SYMBOLS" --period "$PERIOD" --timeframe "$TIMEFRAME" --output reports
+      - name: Run SCR backtest (issue request)
+        if: github.event_name == 'issues'
+        run: python -m scripts.issue_dispatch
       - name: Save report (including error details)
         if: always()
         uses: actions/upload-artifact@v4
