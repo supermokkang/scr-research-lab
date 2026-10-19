@@ -94,7 +94,18 @@ def build_report(symbol, period='10y', timeframe='W', commission=.1):
             'entry_price':sane_num(r['Entry price']), 'exit_price':sane_num(r['Exit price']),
             'return_pct':sane_num(r['Return %'])
         })
+    diagnostic_2023 = []
+    for dt, row in history.loc["2023-09-01":"2023-12-15"].iterrows():
+        diagnostic_2023.append({
+            "date": iso_date(dt), "close": sane_num(row["Close"]),
+            "S": sane_num(row["S"]), "C": sane_num(row["C"]), "R": sane_num(row["R"]),
+            "S_oversold": bool(row["S"] <= p.stoch_os),
+            "C_oversold": bool(row["C"] <= p.cci_os),
+            "R_oversold": bool(row["R"] <= p.rsi_os),
+            "buy": bool(row["Buy"]), "sell": bool(row["Sell"])
+        })
     return {
+        'diagnostic_2023': diagnostic_2023,
         'symbol':symbol, 'period':period, 'timeframe':timeframe,
         'generated_at_utc':datetime.now(timezone.utc).isoformat(),
         'first_completed_bar':iso_date(history.index[0]),
