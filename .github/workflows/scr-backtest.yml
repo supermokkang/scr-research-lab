@@ -1,11 +1,10 @@
-
 name: SCR Backtest Report
 
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Stock symbols"
+        description: "Stock symbols (comma-separated)"
         required: true
         default: "VOO"
         type: string
@@ -13,7 +12,13 @@ on:
         description: "Data period"
         required: true
         default: "10y"
-        type: string
+        type: choice
+        options:
+          - 1y
+          - 2y
+          - 5y
+          - 10y
+          - max
       timeframe:
         description: "D, W, or M"
         required: true
@@ -25,7 +30,7 @@ on:
           - M
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   backtest:
@@ -47,10 +52,13 @@ jobs:
           SYMBOLS: ${{ inputs.symbols }}
           PERIOD: ${{ inputs.period }}
           TIMEFRAME: ${{ inputs.timeframe }}
-        run: python scripts/run_backtest.py
+        run: |
+          python -m scripts.scr_runner --symbols "$SYMBOLS" --period "$PERIOD" --timeframe "$TIMEFRAME" --output reports
 
-      - name: Save report
+      - name: Save report (including error details)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scr-backtest-report
           path: reports/
+          if-no-files-found: warn
