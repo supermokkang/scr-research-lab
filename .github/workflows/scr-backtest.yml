@@ -1,27 +1,25 @@
 name: SCR Backtest Report
-
 on:
   workflow_dispatch:
     inputs:
       symbols:
-        description: "Stock symbols (comma-separated)"
+        description: Symbols
         required: true
-        default: "VOO"
+        default: VOO
         type: string
       period:
-        description: "Data period"
+        description: Period
         required: true
-        default: "10y"
-        type: choice
-        options: [1y, 2y, 5y, 10y, max]
+        default: 10y
+        type: string
       timeframe:
-        description: "D, W, or M"
+        description: Timeframe
         required: true
-        default: "W"
-        type: choice
-        options: [D, W, M]
+        default: W
+        type: string
   issues:
-    types: [opened]
+    types:
+      - opened
 
 permissions:
   contents: read
@@ -29,30 +27,26 @@ permissions:
 
 jobs:
   backtest:
-    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && github.event.issue.user.login == 'supermokkang' && startsWith(github.event.issue.title, 'SCR BT: '))
     runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'issues' && github.event.issue.user.login == 'supermokkang') }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Run SCR backtest (manual)
-        if: github.event_name == 'workflow_dispatch'
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Run backtest on dispatch
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         env:
           SYMBOLS: ${{ inputs.symbols }}
           PERIOD: ${{ inputs.period }}
           TIMEFRAME: ${{ inputs.timeframe }}
         run: python -m scripts.scr_runner --symbols "$SYMBOLS" --period "$PERIOD" --timeframe "$TIMEFRAME" --output reports
-      - name: Run SCR backtest (issue request)
-        if: github.event_name == 'issues'
+      - name: Run backtest from issue
+        if: ${{ github.event_name == 'issues' }}
         run: python -m scripts.issue_dispatch
-      - name: Save report (including error details)
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: scr-backtest-report
           path: reports/
